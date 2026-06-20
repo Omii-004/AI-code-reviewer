@@ -20,7 +20,6 @@ app.include_router(review_router)
 def review_code(request: CodeRequest):
     code = request.code
 
-    # Temporary response (we'll replace this with AI)
     return {
         "analysis": "Code received successfully",
         "length": len(code)

@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, BackgroundTasks
 import requests
 import os
 
-# ✅ move imports to top (better performance)
+# analyzers
 from app.services.ast_analyzer import analyze_ast
 from app.services.complexity import analyze_complexity
 from app.services.security import analyze_security
@@ -11,106 +11,133 @@ from app.services.scorer import score_code
 
 router = APIRouter()
 
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-@router.post("/webhook")
-async def github_webhook(request: Request):
-    payload = await request.json()
+if not GITHUB_TOKEN:
+    raise Exception("GITHUB_TOKEN is missing")
 
-    print("Incoming event:", payload.get("action"))
+def format_ai_review(review: dict) -> str:
+    if not isinstance(review, dict):
+        return "AI response unavailable or invalid."
 
-    # ✅ Only handle PR opened
-    if payload.get("action") != "opened":
-        return {"status": "ignored"}
+    bugs = review.get("bugs", [])
+    improvements = review.get("improvements", [])
+    security = review.get("security", [])
+    complexity = review.get("time_complexity", "N/A")
 
-    pr = payload.get("pull_request")
-    if not pr:
-        return {"status": "no pr data"}
+    def fmt(items):
+        return "\n".join(f"- {i}" for i in items) if items else "No issues found."
 
-    # ✅ Load token at runtime (important fix)
-    token = os.getenv("GITHUB_TOKEN")
+    return f"""
+🔴 **Issues**
+{fmt(bugs)}
 
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github+json"
-    }
+⚡ **Improvements**
+{fmt(improvements)}
 
-    # Repo info
-    owner = payload["repository"]["owner"]["login"]
-    repo = payload["repository"]["name"]
+🔐 **Security**
+{fmt(security)}
 
-    # Get files in PR
-    files_url = pr["url"] + "/files"
+📊 **Complexity**
+{complexity}
+"""
 
-    files_response = requests.get(files_url, headers=headers)
+def process_pr(payload):
+    try:
+        print("Incoming event:", payload.get("action"))
 
-    if files_response.status_code != 200:
-        return {
-            "error": "failed to fetch files",
-            "details": files_response.text
+        if payload.get("action") != "opened":
+            return
+
+        pr = payload.get("pull_request")
+        if not pr:
+            return
+
+        headers = {
+            "Authorization": f"token {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
         }
 
-    files = files_response.json()
+        files_url = pr["url"] + "/files"
+        files_response = requests.get(files_url, headers=headers)
 
-    comments = []
+        if files_response.status_code != 200:
+            print("Failed to fetch files:", files_response.text)
+            return
 
-    for file in files:
-        # ✅ Only Python and JavaScript files
-        if not (file["filename"].endswith(".py") or file["filename"].endswith(".js")):
-            continue
+        files = files_response.json()
+        comments = []
 
-        raw_url = file["raw_url"]
+        for file in files:
+            filename = file["filename"]
 
-        code_res = requests.get(raw_url)
+            if not filename.endswith(".py"):
+                continue
 
-        # ✅ safe fetch
-        if code_res.status_code != 200:
-            continue
+            code_res = requests.get(file["raw_url"])
+            if code_res.status_code != 200:
+                continue
 
-        code = code_res.text
+            code = code_res.text
 
-        # 🔍 Run analyzers
-        ast_result = analyze_ast(code)
-        complexity_result = analyze_complexity(code)
-        security_result = analyze_security(code)
-        ai_result = get_ai_review(code)
+            # analyzers
+            ast_result = analyze_ast(code)
+            complexity_result = analyze_complexity(code)
+            security_result = analyze_security(code)
 
-        score = score_code(
-            ast_result,
-            complexity_result,
-            security_result,
-            ai_result
-        )
+            ai_result = get_ai_review(code) if len(code.strip()) < 5000 else {}
 
-        # ✅ safe issues formatting
-        issues = score.get("reasons", [])
-        issues_text = "\n".join(f"- {r}" for r in issues) if issues else "No major issues found."
+            # scoring
+            score = score_code(
+                ast_result,
+                complexity_result,
+                security_result,
+                ai_result
+            )
 
-        comments.append(
-            f"""### 🤖 AI Review for `{file['filename']}`
+            issues = score.get("reasons", [])
+            issues_text = "\n".join(f"- {r}" for r in issues) if issues else "No major issues found."
 
-**Score:** {score['score']} ({score['verdict']})
+            formatted_ai = format_ai_review(ai_result)
 
-**Issues:**
+            comments.append(
+                f"""### 📄 `{filename}`
+
+**Score:** {score.get('score')} ({score.get('verdict')})
+
+{formatted_ai}
+
+🧾 **Summary Issues**
 {issues_text}
 """
+            )
+
+        if not comments:
+            comments.append("No Python files to review.")
+
+        # Post PR comment
+        res = requests.post(
+            pr["comments_url"],
+            headers=headers,
+            json={"body": "\n\n".join(comments)}
         )
 
-    # ✅ handle empty case
-    if not comments:
-        comments.append("✅ No Python files to review.")
+        print("Comment status:", res.status_code)
 
-    # 📝 Post comment
-    comment_url = pr["comments_url"]
+    except Exception as e:
+        print("Error in process_pr:", str(e))
 
-    res = requests.post(
-        comment_url,
-        headers=headers,
-        json={"body": "\n\n".join(comments)}
-    )
 
-    print("Comment status:", res.status_code)
+# WEBHOOK
+@router.post("/webhook")
+async def github_webhook(request: Request, background_tasks: BackgroundTasks):
+    event = request.headers.get("X-GitHub-Event")
 
-    return {
-        "status": "done",
-        "comment_status": res.status_code
-    }
+    if event != "pull_request":
+        return {"status": "ignored"}
+
+    payload = await request.json()
+
+    background_tasks.add_task(process_pr, payload)
+
+    return {"status": "processing"}

@@ -2,7 +2,7 @@ def score_code(ast_data, complexity_data, security_data, ai_data):
     score = 100
     reasons = []
 
-    # 🔴 Security penalties (most important)
+    # Security penalties 
     for issue in security_data.get("issues", []):
         severity = issue.get("severity", "LOW")
 
@@ -15,7 +15,7 @@ def score_code(ast_data, complexity_data, security_data, ai_data):
         else:
             score -= 5
 
-    # 🟠 Complexity penalties
+    # Complexity penalties
     for func in complexity_data.get("functions", []):
         c = func.get("complexity", 0)
 
@@ -25,12 +25,12 @@ def score_code(ast_data, complexity_data, security_data, ai_data):
         elif c > 5:
             score -= 8
 
-    # 🟡 AST issues
+    # AST issues
     for issue in ast_data.get("issues", []):
         score -= 5
         reasons.append(issue)
 
-    # 🔵 AI bugs
+    # AI bugs
     for bug in ai_data.get("bugs", []):
         score -= 7
         reasons.append(bug)
@@ -38,7 +38,7 @@ def score_code(ast_data, complexity_data, security_data, ai_data):
     # Clamp score
     score = max(score, 0)
 
-    # 🎯 Verdict
+    # Verdict
     if score > 80:
         verdict = "GOOD"
     elif score > 50:
@@ -49,5 +49,5 @@ def score_code(ast_data, complexity_data, security_data, ai_data):
     return {
         "score": score,
         "verdict": verdict,
-        "reasons": reasons[:5]  # keep it clean
+        "reasons": reasons[:5] #reasons count
     }

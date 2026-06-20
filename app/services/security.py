@@ -37,13 +37,3 @@ def analyze_security(code: str):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-
-#Test
-if __name__ == "__main__":
-    code = """
-password = "123456"
-
-def run():
-    eval("print('hello')")
-"""
-    print(analyze_security(code))
